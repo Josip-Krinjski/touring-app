@@ -70,3 +70,30 @@ jobs:
 
       - name: Build frontend
         run: npm run build
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+
+    needs:
+      - backend
+      - frontend
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    environment: staging
+
+    steps:
+      - name: Verify staging secret
+        env:
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+        run: |
+          if [ -z "$JWT_SECRET" ]; then
+            echo "Staging JWT_SECRET is missing"
+            exit 1
+          fi
+
+          echo "Staging environment is configured"
+
+      - name: Simulate deployment
+        run: echo "Deploying Touring App to staging..."
