@@ -32,6 +32,17 @@ jobs:
       - name: Install backend dependencies
         run: npm ci
 
+      - name: Verify JWT secret
+        env:
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+        run: |
+          if [ -z "$JWT_SECRET" ]; then
+            echo "JWT_SECRET is missing"
+            exit 1
+          fi
+
+          echo "JWT_SECRET is configured"    
+
       - name: Lint backend
         run: npm run lint
 
