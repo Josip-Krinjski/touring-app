@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+backend/node_modules/
+
+# Angular
+frontend/dist/
+frontend/.angular/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Tests
+coverage/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/backend/config.env
+/backend/config.env
+.idea/
+backend/.idea/
