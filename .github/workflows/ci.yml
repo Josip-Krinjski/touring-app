@@ -1,99 +1,232 @@
-name: Full-Stack CI
+# Name shown in the GitHub Actions tab
+name: Full-Stack CI/CD
 
+
+# --------------------------------------------------
+# WHEN SHOULD THIS WORKFLOW RUN?
+# --------------------------------------------------
 on:
+  # Run when code is pushed directly to main
+  # This also happens after a PR is merged into main
   push:
     branches:
       - main
 
+  # Run when a Pull Request targets main
   pull_request:
     branches:
       - main
 
+
+# --------------------------------------------------
+# GENERAL WORKFLOW PERMISSIONS
+# --------------------------------------------------
+# The workflow only needs permission to read repository files
+permissions:
+  contents: read
+
+
 jobs:
+
+  # ==================================================
+  # BACKEND CI
+  # ==================================================
   backend:
+    # Name visible in GitHub Actions
     name: Backend CI
+
+    # GitHub creates a fresh Linux machine for this job
     runs-on: ubuntu-latest
 
+    # Every "run:" command below will run inside /backend
     defaults:
       run:
         working-directory: backend
 
     steps:
+
+      # Download our repository onto the GitHub runner
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Install/configure Node.js on the runner
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
+
+          # Cache downloaded npm packages to make future runs faster
           cache: npm
+
+          # Backend has its own package-lock.json
           cache-dependency-path: backend/package-lock.json
 
+      # Install EXACT dependency versions from package-lock.json
+      # npm ci is preferred in CI/CD instead of npm install
       - name: Install backend dependencies
         run: npm ci
 
-      - name: Verify JWT secret
-        env:
-          JWT_SECRET: ${{ secrets.JWT_SECRET }}
-        run: |
-          if [ -z "$JWT_SECRET" ]; then
-            echo "JWT_SECRET is missing"
-            exit 1
-          fi
-
-          echo "JWT_SECRET is configured"    
-
+      # Run ESLint
+      # If ESLint finds an error, this job fails
       - name: Lint backend
         run: npm run lint
 
+
+  # ==================================================
+  # FRONTEND CI
+  # ==================================================
   frontend:
     name: Frontend CI
+
+    # Separate runner from the backend job
+    # Backend and frontend can run in parallel
     runs-on: ubuntu-latest
 
+    # Every "run:" command below runs inside /frontend
     defaults:
       run:
         working-directory: frontend
 
     steps:
+
+      # Download repository code
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Configure Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
+
+          # Cache npm downloads
           cache: npm
+
+          # Frontend has its own package-lock.json
           cache-dependency-path: frontend/package-lock.json
 
+      # Install Angular dependencies
       - name: Install frontend dependencies
         run: npm ci
 
+      # Create the production Angular build
+      # Output is normally created inside dist/
       - name: Build frontend
         run: npm run build
 
+      # Save the Angular build as a GitHub Actions artifact
+      #
+      # Important:
+      # deploy-staging runs on ANOTHER runner,
+      # so it cannot automatically see files created by this job.
+      #
+      # Artifact = package/file passed from one job to another.
+      - name: Upload frontend build
+        uses: actions/upload-artifact@v4
+        with:
+          # Name of our artifact
+          name: frontend-build
+
+          # Angular production files we want to deploy
+          path: frontend/dist/frontend/browser
+
+          # Fail immediately if this directory does not exist
+          if-no-files-found: error
+
+          # We only need this artifact briefly
+          retention-days: 1
+
+
+  # ==================================================
+  # CD - DEPLOY TO STAGING
+  # ==================================================
   deploy-staging:
     name: Deploy to Staging
+
+    # Again, GitHub creates a new fresh runner
     runs-on: ubuntu-latest
 
+    # ------------------------------------------------
+    # DEPENDENCIES
+    # ------------------------------------------------
+    # Do NOT start deployment until BOTH CI jobs pass
     needs:
       - backend
       - frontend
 
+    # ------------------------------------------------
+    # DEPLOY ONLY FROM MAIN
+    # ------------------------------------------------
+    #
+    # For a Pull Request:
+    # github.event_name = pull_request
+    # → deployment is skipped
+    #
+    # After PR is merged:
+    # github.event_name = push
+    # github.ref = refs/heads/main
+    # → deployment runs
+    #
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
+    # Connect this job with the GitHub "staging" environment
     environment: staging
 
     steps:
-      - name: Verify staging secret
-        env:
-          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+
+      # Download the Angular artifact created in Frontend CI
+      - name: Download frontend build
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build
+
+          # Put the downloaded files into ./dist
+          path: dist
+
+
+      # ------------------------------------------------
+      # AUTHENTICATE WITH AWS
+      # ------------------------------------------------
+      #
+      # Credentials come from GitHub Secrets.
+      # Their actual values are NOT stored in this YAML.
+      #
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+          # AWS_REGION is a GitHub Variable, not a secret
+          aws-region: ${{ vars.AWS_REGION }}
+
+
+      # ------------------------------------------------
+      # DEPLOY ANGULAR FILES TO S3
+      # ------------------------------------------------
+      #
+      # "sync" compares our new build with the S3 bucket
+      #
+      # --delete:
+      # removes old S3 files that no longer exist
+      # in the new Angular build
+      #
+      - name: Deploy frontend to S3
         run: |
-          if [ -z "$JWT_SECRET" ]; then
-            echo "Staging JWT_SECRET is missing"
-            exit 1
-          fi
+          aws s3 sync dist/ s3://${{ vars.S3_BUCKET }} --delete
 
-          echo "Staging environment is configured"
 
-      - name: Simulate deployment
-        run: echo "Deploying Touring App to staging..."
+      # ------------------------------------------------
+      # CLEAR CLOUDFRONT CACHE
+      # ------------------------------------------------
+      #
+      # CloudFront may still have the OLD Angular files cached.
+      #
+      # Invalidation tells CloudFront:
+      # "Throw away the cached version and fetch the new one."
+      #
+      - name: Invalidate CloudFront cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --paths "/*"

@@ -43,7 +43,7 @@ process.on('unhandledRejection', (reason) => {
 /**
  *
  * const { MongoClient, ServerApiVersion } = require('mongodb');
- * const uri = "mongodb+srv://jkabos_db_user:wtYIuEOqMSOXvfxW@cluster0.sx723yg.mongodb.net/?appName=Cluster0";
+ * const uri = "";
  *
  * // Create a MongoClient with a MongoClientOptions object to set the Stable API version
  * const client = new MongoClient(uri, {
